@@ -35,3 +35,50 @@ class Flit:
         self.src = src
         self.dest = dest
         self.timestamp = time
+
+class Node:
+    def __init__(self, env, id):
+        self.env = env
+        self.id = id
+        self.single = simpy.Store(env, capacity=1) # for single flit buffer
+        self.shared = simpy.Store(env, capacity=100) # extension buffer in a node
+
+    def injection(self, packet):
+        pass
+
+    def ejection(self):
+        pass
+
+    def send(self):
+        yield 
+
+    def process(self):
+        pass
+
+    def routing(self):
+        pass
+    
+def create_packet(env, node):
+    pid = 0 # again, packet id
+
+    while True:
+        packet = Packet(
+            id=pid,
+            src=node.id,
+            dest=node.id,
+            size=random.randint(3, 5),
+            time=env.now
+        )
+    
+        yield env.process(node.injection(packet))
+        pid += 1
+        yield env.timeout(random.randint(2, 5))
+
+def run(duration=20):
+    env = simpy.Environment()
+    #node = Node(env)
+    #env.process(create_packet(env, node))
+    env.run(until=duration)
+
+if __name__ == "__main__":
+    run()
