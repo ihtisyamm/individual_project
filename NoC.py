@@ -53,14 +53,21 @@ class Node:
         self.injecting = False                          # to check if injecting is in progress
         self.port = None
 
+        self.reserve = False                            # implement livelock avoidance
+        self.rQueue = simpy.Store(env)                  # reserve queue for livelock avoidance
+
         self.env.process(self.process())
 
     def injection(self, packet):
         self.injecting = True
         try:
             flits = packet.flitation()
+            print(f"Packet {packet.id} injected at time {self.env.now}")
             for flit in flits:
-                yield self.env.process(self.send(flit))
+                yield self.env.process(self.forward(flit))
+                #if flit.type == "TAIL":
+                 #   print(f"Packet {flit.pid} injected at time {self.env.now}")
+                yield self.env.timeout(1)
         finally:
             self.injecting = False
 
@@ -73,32 +80,55 @@ class Node:
         else:
             self.port = 1
 
+        if self.reserve:
+            yield self.timeout(1)
+            self.reserve = False
+
         with self.link[self.port].request() as req:
             yield req
             yield self.queue[self.port].put(flit)
-            yield self.env.timeout(1)
 
             if flit.type == "TAIL":
                 print(f"Packet {flit.pid} ejected at time {self.env.now}")
+            yield self.env.timeout(1)
 
     # forward to another node
-    def send(self, flit):
+    def forward(self, flit):
         yield self.single.put(flit)
+        yield self.env.timeout(1)
 
     # determine where if the packet has arrived at the node destination
     def process(self):
         while True:
             flit = yield self.single.get()
-            yield self.env.process(self.ejection(flit))
+            if flit.dest == self.id:
 
-            """
-            
-            if flit.pid == id:
-                if len(self.link[0].items) == 1 and len(self.link[0].items) == 1:
-                    yield self.env.process(self.send(flit))
-                elif len(self.link[0].items) == 0 or len(self.link[1].items) == 0:
+                eject = False
+                for i in range(2):
+                    if not self.link[i].users:
+                        if flit.type == "HEAD":
+                            eject = True
+                            break
+                        elif (len(self.queue[i].items) > 0 and
+                            self.queue[i].items[-1].pid == flit.pid):
+                            eject = True
+                            break
+
+                if eject:
                     yield self.env.process(self.ejection(flit))
-            """
+                else:
+                    if flit.type == "HEAD":
+                        flit.cycle += 1
+                    
+                    if (flit.type == "HEAD" and
+                        flit.cycle > 254):
+                        self.reserve = True
+                        yield self.rQueue.put(flit)
+                    else:
+                        yield self.env.process(self.forward(flit))
+            else:
+                yield self.env.process(self.forward(flit))
+
     # assigned a pre-determined path to each flit when it is injected
     def routing(self, flit):
         pass
@@ -107,12 +137,13 @@ class Node:
 # note: fixed to 3 to make it more simpler first
 def create(env, node):
     pid = 0 # again, packet id
+    dest = random.randint(0, 15)
 
     while True:
         packet = Packet(
             id=pid,
             src=node.id,
-            dest=node.id,
+            dest=dest,
             size=3,
             time=env.now
         )
@@ -121,10 +152,17 @@ def create(env, node):
         pid += 1
         yield env.timeout(1)
 
-def run(duration=12):
+def run(duration=100):
     env = simpy.Environment()
-    node = Node(env, 1)
-    env.process(create(env, node))
+    #node = Node(env, 1)
+    #env.process(create(env, node))
+    nodes = []
+
+    for i in range(16):
+        nodes.append(Node(env, id=i))
+
+    for node in nodes:
+        env.process(create(env, node=node))
     env.run(until=duration)
 
 if __name__ == "__main__":
