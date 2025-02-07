@@ -62,7 +62,7 @@ class Node:
         self.injecting = True
         try:
             flits = packet.flitation()
-            print(f"Packet {packet.id} injected at time {self.env.now}")
+            print(f"Node {self.id}: Packet {packet.id} injected at time {self.env.now}")
             for flit in flits:
                 yield self.env.process(self.forward(flit))
                 #if flit.type == "TAIL":
@@ -89,7 +89,7 @@ class Node:
             yield self.queue[self.port].put(flit)
 
             if flit.type == "TAIL":
-                print(f"Packet {flit.pid} ejected at time {self.env.now}")
+                print(f"Node {self.id}: Packet {flit.pid} ejected at time {self.env.now}")
             yield self.env.timeout(1)
 
     # forward to another node
