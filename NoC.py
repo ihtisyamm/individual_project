@@ -45,7 +45,10 @@ class Node:
         self.env = env
         self.id = id
         self.single = simpy.Store(env, capacity=1)      # for single flit buffer
-        self.shared = simpy.Store(env, capacity=100)    # extension buffer in a node
+        self.exb = simpy.Store(env, capacity=100)    # extension buffer in a node
+        self.next = None
+        self.injecting = False
+        """
         self.queue = [simpy.Store(env),
                       simpy.Store(env)]                 # ejection queue after packet is ejected
         self.link = [simpy.Resource(env, capacity=1),
@@ -55,18 +58,34 @@ class Node:
 
         self.reserve = False                            # implement livelock avoidance
         self.rQueue = simpy.Store(env)                  # reserve queue for livelock avoidance
+        self.input = False                              # check if there is any input that will 
+                                                        # want to be ejected or deflect
+        self.output = False                             # checked if there is any output is being injected
+        """
 
         self.env.process(self.process())
+
+    def nextNode(self, node):
+        self.next = node
+        print(f"Node {self.id} connected to Node {node.id}")
 
     def injection(self, packet):
         self.injecting = True
         try:
             flits = packet.flitation()
-            print(f"Node {self.id}: Packet {packet.id} injected at time {self.env.now}")
+            print(f"Node {self.id}: Packet {packet.id} injected at time {self.env.now} (dest: {packet.dest})")
             for flit in flits:
+                if len(self.single.items) > 0:
+                    print(f"Node {self.id}: Loop busy. Storing flit {flit.id} in EXB at time {self.env.now}")
+                    yield self.exb.put(flit)
+                else:
+                    yield self.env.process(self.forward(flit))
+                yield self.env.timeout(1)
+
+            while len(self.exb.items) > 0:
+                flit = yield self.exb.get()
+                print(f"Node {self.id}: Draining flit {flit.id} from EXB at time {self.env.now}")
                 yield self.env.process(self.forward(flit))
-                #if flit.type == "TAIL":
-                 #   print(f"Packet {flit.pid} injected at time {self.env.now}")
                 yield self.env.timeout(1)
         finally:
             self.injecting = False
@@ -94,11 +113,20 @@ class Node:
 
     # forward to another node
     def forward(self, flit):
-        yield self.single.put(flit)
+        print(f"Node {self.id}: forwarding flit {flit.id} to next Node {self.next.id} at time {self.env.now}")
+        yield self.next.single.put(flit)
         yield self.env.timeout(1)
+
+        # change the node also or should i?
+        # does the node matter?
+        # is the important thing is the (packet id, node id) or node or both?
+        # should change the node, but how?
+        # need to finish path asap
+        # maybe just copy the path element, but how to know which node we're in right now?
 
     # determine where if the packet has arrived at the node destination
     def process(self):
+        """
         while True:
             flit = yield self.single.get()
             if flit.dest == self.id:
@@ -128,6 +156,15 @@ class Node:
                         yield self.env.process(self.forward(flit))
             else:
                 yield self.env.process(self.forward(flit))
+        """
+        while True:
+            flit = yield self.single.get()
+            print(f"Node {self.id}: Processing flit {flit.id} at time {self.env.now}")
+
+            if flit.dest == self.id:
+                print(f"Node {self.id}: Ejecting flit {flit.id} at time {self.env.now}")
+            else:
+                yield self.env.process(self.forward(flit))
 
     # assigned a pre-determined path to each flit when it is injected
     def routing(self, flit):
@@ -135,35 +172,37 @@ class Node:
 
 # generate arbitrary packet size
 # note: fixed to 3 to make it more simpler first
-def create(env, node):
+def create(env, node, pid=0):
     pid = 0 # again, packet id
-    dest = random.randint(0, 15)
+    dest = (node.id + 1) % 16
 
     while True:
         packet = Packet(
             id=pid,
             src=node.id,
             dest=dest,
-            size=3,
+            size=5,
             time=env.now
         )
     
         yield env.process(node.injection(packet))
         pid += 1
-        yield env.timeout(1)
+        yield env.timeout(10)
 
-def run(duration=100):
+def run(size=0):
     env = simpy.Environment()
     #node = Node(env, 1)
     #env.process(create(env, node))
-    nodes = []
+    nodes = [Node(env, i) for i in range(size)]
 
-    for i in range(16):
-        nodes.append(Node(env, id=i))
+    for i in range(size):
+        nodes[i].nextNode(node=nodes[(i+1) % size])
 
-    for node in nodes:
-        env.process(create(env, node=node))
-    env.run(until=duration)
+    for i, node in enumerate(nodes):
+        env.process(create(env, node=node, pid=i*1000))
+
+    return env, nodes
 
 if __name__ == "__main__":
-    run()
+    env, nodes = run(size=16)
+    env.run(until=10)
