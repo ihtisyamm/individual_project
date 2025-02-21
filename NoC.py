@@ -1,5 +1,41 @@
 import simpy
-import random
+
+class Path:
+    def __init__(self, source, destination, nodes):
+        self.source = source
+        self.destination = destination
+        self.path = nodes
+        self.hops = len(nodes) - 1
+
+class PathTable:
+    def __init__(self, size):
+        self.paths = {}
+        self.loops = []
+        self.size = size # network size
+
+    def addLoop(self, loop):
+        self.loops.append(loop)
+
+        size = len(loop)
+        for i in range(size):
+            for j in range(size):
+                src = loop[i]
+                dest = loop[j]
+
+                # clockwise path
+                if j > i:
+                    path = loop[i:j+1]
+                else:
+                    path = loop[i:] + loop[:j+1]
+
+                key = (src, dest)
+
+                if key not in self.paths or len(path) < len(self.paths[key].path):
+                    self.paths[key] = Path(src, dest, path)
+
+    def getPath(self, source, destination):
+        return self.paths.get((source, destination))
+    
 
 class Packet:
     def __init__(self, id, src, dest, size, time):
@@ -9,6 +45,7 @@ class Packet:
         self.size = size
         self.timestamp = time
         self.flits = []
+        self.path = None
 
     # segment packet into flits
     def flitation(self):
@@ -19,14 +56,16 @@ class Packet:
             elif i == (self.size-1):
                 type = "TAIL"
             
-            self.flits.append(Flit(
+            flit = Flit(
                 id=f"packet{self.id}_flit{i}",
                 pid=self.id,
                 type=type,
                 src=self.src,
                 dest=self.dest,
                 time=self.timestamp
-            ))
+            )
+            flit.path = self.path
+            self.flits.append(flit)
         return self.flits
 
 class Flit:
@@ -36,6 +75,7 @@ class Flit:
         self.type = type    # head | body | tail
         self.src = src
         self.dest = dest
+        self.path = None
         self.timestamp = time
         if self.type == "HEAD":
             self.cycle = 0
@@ -48,11 +88,11 @@ class Node:
         self.exb = simpy.Store(env, capacity=100)    # extension buffer in a node
         self.next = None
         self.injecting = False
-        """
         self.queue = [simpy.Store(env),
                       simpy.Store(env)]                 # ejection queue after packet is ejected
         self.link = [simpy.Resource(env, capacity=1),
                      simpy.Resource(env, capacity=1)]   # ejection link limit
+        """
         self.injecting = False                          # to check if injecting is in progress
         self.port = None
 
@@ -63,11 +103,12 @@ class Node:
         self.output = False                             # checked if there is any output is being injected
         """
 
-        self.env.process(self.process())
+        self.env.process(self.activity())
+        
 
     def nextNode(self, node):
         self.next = node
-        print(f"Node {self.id} connected to Node {node.id}")
+        print(f"Node {self.id} connected to Node {node.id} at time {self.env.now}")
 
     def injection(self, packet):
         self.injecting = True
@@ -91,6 +132,7 @@ class Node:
             self.injecting = False
 
     def ejection(self, flit):
+        """
         if len(self.queue[0].items) > 0:
             if self.queue[0].items[-1].pid == flit.pid:
                 self.port = 0
@@ -110,22 +152,59 @@ class Node:
             if flit.type == "TAIL":
                 print(f"Node {self.id}: Packet {flit.pid} ejected at time {self.env.now}")
             yield self.env.timeout(1)
+        """
+        for i, link in enumerate(self.link):
+            if not link.users:
+                if flit.type == "HEAD" or (
+                    len(self.queue) > 0 and
+                    self.queue[i].items[-1].pid == flit.pid
+                ):
+                    with link.request() as req:
+                        yield req
+                        yield self.queue[i].put(flit)
+                        print(f"Node {self.id}: Flit {flit.id} ejected on link {i} at time {self.env.now}")
+                        if flit.type == "TAIL":
+                            print(f"Node {self.id}: Packet {flit.id} ejected at time {self.env.now}")
+                        yield self.env.timeout(1)
+                        return True
+        return False
 
     # forward to another node
     def forward(self, flit):
+        """
+        if hasattr(flit, 'path'):
+            try:
+                current_idx = flit.path.path.index(self.id)
+                if current_idx < len(flit.path.path) - 1:
+                    next_node_id = flit.path.path[current_idx + 1]
+                    print(f"Node {self.id}: forwarding flit {flit.id} to next Node {next_node_id} (path-based) at time {self.env.now}")
+            except ValueError:
+                pass
+
+        print(f"Node {self.id}: forwarding flit {flit.id} to next Node {self.next.id} at time {self.env.now}")
+        yield self.next.single.put(flit)
+        yield self.env.timeout(1)
+        """
+        if hasattr(flit, 'path') and flit.path:
+            try:
+                current_idx = flit.path.path.index(self.id)
+                if current_idx < len(flit.path.path) - 1:
+                    next_node_id = flit.path.path[current_idx + 1]
+                    next_node = self.node_lookup[next_node_id]
+                    print(f"Node {self.id}: forwarding flit {flit.id} to next Node {next_node_id} at time {self.env.now}")
+                    yield next_node.single.put(flit)
+                    yield self.env.timeout(1)
+                    return
+            except ValueError:
+                pass
+        
+        # Fallback to default behavior
         print(f"Node {self.id}: forwarding flit {flit.id} to next Node {self.next.id} at time {self.env.now}")
         yield self.next.single.put(flit)
         yield self.env.timeout(1)
 
-        # change the node also or should i?
-        # does the node matter?
-        # is the important thing is the (packet id, node id) or node or both?
-        # should change the node, but how?
-        # need to finish path asap
-        # maybe just copy the path element, but how to know which node we're in right now?
-
     # determine where if the packet has arrived at the node destination
-    def process(self):
+    def activity(self):
         """
         while True:
             flit = yield self.single.get()
@@ -163,6 +242,10 @@ class Node:
 
             if flit.dest == self.id:
                 print(f"Node {self.id}: Ejecting flit {flit.id} at time {self.env.now}")
+                checkEject = yield self.env.process(self.ejection(flit=flit))
+                if not checkEject:
+                    print(f"Node {self.id}: Failed to eject flit {flit.id}. Forward to another loop at time {self.env.now}")
+                    yield self.env.process(self.forward(flit))
             else:
                 yield self.env.process(self.forward(flit))
 
@@ -172,37 +255,48 @@ class Node:
 
 # generate arbitrary packet size
 # note: fixed to 3 to make it more simpler first
-def create(env, node, pid=0):
+def create(env, nodes, pathTable):
     pid = 0 # again, packet id
-    dest = (node.id + 1) % 16
 
-    while True:
+    for i, node in enumerate(nodes):
+
+        yield env.timeout(i*2)
+        dest = (node.id + 1) % len(nodes)
+
         packet = Packet(
             id=pid,
             src=node.id,
             dest=dest,
             size=5,
-            time=env.now
+            time=env.now # inject the packet in interval
         )
+
+        path = pathTable.getPath(node.id, dest)
+        if path:
+            packet.path = path
     
         yield env.process(node.injection(packet))
         pid += 1
-        yield env.timeout(10)
 
 def run(size=0):
     env = simpy.Environment()
-    #node = Node(env, 1)
-    #env.process(create(env, node))
     nodes = [Node(env, i) for i in range(size)]
 
+    node_lookup = {node.id: node for node in nodes}
+    for node in nodes:
+        node.node_lookup = node_lookup  # Add this to each node
+
+    pathTable = PathTable(size=size)
+
     for i in range(size):
-        nodes[i].nextNode(node=nodes[(i+1) % size])
+        next = nodes[(i+1) % size] # assign to next node
+        nodes[i].nextNode(next)
 
-    for i, node in enumerate(nodes):
-        env.process(create(env, node=node, pid=i*1000))
+        pathTable.addLoop([j % size for j in range(i, i + size)])
 
+    env.process(create(env, nodes=nodes, pathTable=pathTable))
     return env, nodes
 
 if __name__ == "__main__":
     env, nodes = run(size=16)
-    env.run(until=10)
+    env.run(until=5)
