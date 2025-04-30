@@ -236,9 +236,6 @@ class Node:
 
     def drainEXB(self, loopID):
         print(f"Attempting to drain EXB for loop {loopID}")
-        
-        # Log the initial state for debugging
-        print(f"DEBUG-EXB: drainEXB starting for loop {loopID}, EXB items: {len(self.exb.items)}, attached: {self.exbAttachedToLoop[loopID]}")
 
         while len(self.exb.items) > 0 and self.exbAttachedToLoop[loopID]:
             if len(self.loopBuffers[loopID].items) == 0:
@@ -248,10 +245,6 @@ class Node:
 
                 flit.currNode = self.nodeID
                 # Don't reset inject time if it's already set
-                # This is already commented out in your code, which is good
-
-                # Log the flit being drained
-                print(f"DEBUG-EXB: Drained flit {flit.id} from EXB to loop {loopID}, remaining EXB items: {len(self.exb.items)}")
 
                 yield self.loopBuffers[loopID].put(flit)
                 self.env.process(self.processFlit(loopID))
@@ -381,6 +374,7 @@ class Node:
             # Check if both source and destination are in this loop
             if self.nodeID in loop.nodes and dest in loop.nodes:
                 pathLen = loop.getPathLen(self.nodeID, dest)
+
                 print(f"DEBUG-ROUTING: Loop {loopID} contains both nodes, path length: {pathLen}")
                 
                 if pathLen < minHops:
